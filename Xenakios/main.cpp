@@ -34,8 +34,10 @@
 
 using namespace std;
 
-int *ShuffledNumbers;
-int ShuffledNumbersGenerated=0;
+extern MTRand g_mtrand;
+
+std::vector<int> g_ShuffledNumbers;
+int g_ShuffledNumbersGenerated=0;
 
 int IsRippleOneTrack(COMMAND_T*) { return *(int*)GetConfigVar("projripedit") == 1; }
 int IsRippleAll(COMMAND_T*)      { return *(int*)GetConfigVar("projripedit") == 2; }
@@ -64,29 +66,27 @@ void DoToggleRippleAll(COMMAND_T*)
 	}
 }
 
-bool GenerateShuffledRandomTable(int *IntTable,int numItems,int badFirstNumber)
+bool GenerateShuffledRandomTable(std::vector<int>& IntTable,int numItems,int badFirstNumber)
 {
-	int *CheckTable=new int[1024];
-	bool GoodFound=FALSE;
+	std::vector<int> CheckTable(1024);
+	bool GoodFound=false;
 	int IterCount=0;
-	int rndInt;
-	int i;
-	for (i=0;i<1024;i++)
+	int rndInt=0;
+	for (int i=0;i<1024;i++)
 	{
 		CheckTable[i]=0;
 		IntTable[i]=0;
 	}
-
-	for (i=0;i<numItems;i++)
+	for (int i=0;i<numItems;i++)
 	{
-		GoodFound=FALSE;
+		GoodFound=false;
 		while (!GoodFound)
 		{
-			rndInt=rand() % numItems;
+			rndInt=g_mtrand.randInt() % numItems;
 			if ((CheckTable[rndInt]==0) && (rndInt!=badFirstNumber) && (i==0))
-				GoodFound=TRUE;
+				GoodFound=true;
 			if ((CheckTable[rndInt]==0) && (i>0))
-				GoodFound=TRUE;
+				GoodFound=true;
 
 			IterCount++;
 			if (IterCount>10000000)
@@ -98,8 +98,7 @@ bool GenerateShuffledRandomTable(int *IntTable,int numItems,int badFirstNumber)
 			CheckTable[rndInt]=1;
 		}
 	}
-	delete[] CheckTable;
-	return FALSE;
+	return false; // UGH, why does this always return false???
 }
 
 void DoSelectFiles(COMMAND_T*)
@@ -107,36 +106,39 @@ void DoSelectFiles(COMMAND_T*)
 	char* cFiles = BrowseForFiles(__LOCALIZE("Select files","sws_mbox"), NULL, NULL, true, "WAV Files\0*.wav\0");
 	if (cFiles)
 	{
-		g_filenames->Empty(true, free);
+		g_filenames.clear();
 		char* pStr = cFiles;
 		while(*pStr)
 		{
-			strcpy(g_filenames->Add((char*)malloc(strlen(pStr)+1)), pStr);
+			g_filenames.push_back(pStr);
 			pStr += strlen(pStr)+1;
 		}
 		free(cFiles);
 	}
-	ShuffledNumbersGenerated=0;
-	GenerateShuffledRandomTable(ShuffledNumbers,g_filenames->GetSize(),-1);
+	g_ShuffledNumbersGenerated=0;
+	GenerateShuffledRandomTable(g_ShuffledNumbers,g_filenames.size(),-1);
 }
 
 void DoInsertRandom(COMMAND_T*)
 {
-	if (g_filenames->GetSize()>0)
-		InsertMedia(g_filenames->Get(rand() % g_filenames->GetSize()), 0);
+	// Using % to limit the random number isn't really correct. Should use the MTRand method
+	// to get a rand int from a range, but should ensure first what is the actual range it will
+	// return since we don't want to be indexing outside the array/list bounds
+	if (g_filenames.size()>0)
+		InsertMedia(g_filenames[g_mtrand.randInt() % g_filenames.size()].c_str(), 0);
 }
 
 void DoInsRndFileEx(bool RndLen,bool RndOffset,bool UseTimeSel)
 {
-	if (g_filenames->GetSize()>0)
+	if (g_filenames.size()>0)
 	{
-		int filenameindex=rand() % g_filenames->GetSize();
+		int filenameindex=g_mtrand.randInt() % g_filenames.size();
 
 		t_vect_of_Reaper_tracks TheTracks;
 		XenGetProjectTracks(TheTracks,true);
 		if (TheTracks.size()>0)
 		{
-			PCM_source *NewPCM=PCM_Source_CreateFromFile(g_filenames->Get(filenameindex));
+			PCM_source *NewPCM=PCM_Source_CreateFromFile(g_filenames[filenameindex].c_str());
 			if (!NewPCM)
 				return;
 
@@ -150,10 +152,11 @@ void DoInsRndFileEx(bool RndLen,bool RndOffset,bool UseTimeSel)
 			double MediaOffset=0.0;
 			if (RndOffset)
 			{
-				MediaOffset=(NewPCM->GetLength()/RAND_MAX)*rand();
+				MediaOffset=NewPCM->GetLength()*g_mtrand.rand();
 				ItemLen-=MediaOffset;
 			}
-			if (RndLen) ItemLen=((NewPCM->GetLength()-MediaOffset)/RAND_MAX)*rand();
+			if (RndLen)
+				ItemLen = (NewPCM->GetLength() - MediaOffset)*g_mtrand.rand();
 			if (UseTimeSel) ItemLen=TimeSelEnd-TimeSelStart;
 			if (!UseTimeSel) ItemPos=GetCursorPosition();
 			GetSetMediaItemTakeInfo(NewTake,"P_SOURCE",NewPCM);
@@ -209,24 +212,20 @@ void DoRoundRobinSelectTakes(COMMAND_T* ct)
 
 void DoSelectTakeInSelectedItems(int takeIndx) // -1 first -2 last take, otherwise index, if bigger than numtakes in item, the last
 {
-	MediaTrack* CurTrack;
-	MediaItem* CurItem;
-	bool ItemSelected;
-	int numItems;
-	int numTakes;
-	int trackID;
-	int itemID;
-	for (trackID=0;trackID<GetNumTracks();trackID++)
+	MediaTrack* CurTrack=NULL;
+	MediaItem* CurItem=NULL;
+	bool ItemSelected=false;
+	for (int trackID=0;trackID<GetNumTracks();trackID++)
 	{
 		CurTrack=CSurf_TrackFromID(trackID+1,FALSE);
-		numItems=GetTrackNumMediaItems(CurTrack);
-		for (itemID=0;itemID<numItems;itemID++)
+		int numItems=GetTrackNumMediaItems(CurTrack);
+		for (int itemID=0;itemID<numItems;itemID++)
 		{
 			CurItem = GetTrackMediaItem(CurTrack,itemID);
 			ItemSelected=*(bool*)GetSetMediaItemInfo(CurItem,"B_UISEL",NULL);
 			if (ItemSelected==TRUE)
 			{
-				numTakes=GetMediaItemNumTakes(CurItem);
+				int numTakes=GetMediaItemNumTakes(CurItem);
 				if (numTakes>0)
 				{
 					int TakeToSelect;
@@ -259,17 +258,17 @@ void DoSelectLastTakesInItems(COMMAND_T* ct)
 
 void DoInsertShuffledRandomFile(COMMAND_T*)
 {
-	if (g_filenames->GetSize()>2)
+	if (g_filenames.size()>2)
 	{
-	 int FileToChoose=ShuffledNumbers[ShuffledNumbersGenerated];
-	 char* filename;
-	 filename=g_filenames->Get(FileToChoose);
+	 int FileToChoose=g_ShuffledNumbers[g_ShuffledNumbersGenerated];
+	 char* filename=nullptr;
+	 filename=(char*)g_filenames[FileToChoose].c_str();
 	 InsertMedia(filename,0);
-	 ShuffledNumbersGenerated++;
-	 if (ShuffledNumbersGenerated==g_filenames->GetSize())
+	 g_ShuffledNumbersGenerated++;
+	 if (g_ShuffledNumbersGenerated==g_filenames.size())
 	 {
-		GenerateShuffledRandomTable(ShuffledNumbers,g_filenames->GetSize(),FileToChoose);
-		ShuffledNumbersGenerated=0;
+		GenerateShuffledRandomTable(g_ShuffledNumbers,g_filenames.size(),FileToChoose);
+		g_ShuffledNumbersGenerated=0;
 	 }
 	}
 	else
@@ -277,12 +276,15 @@ void DoInsertShuffledRandomFile(COMMAND_T*)
 
 }
 
-bool ItemTimesCompFunc(MediaItem* ita,MediaItem* itb)
+struct ItemTimesCompFunc
 {
-	double itapos=*(double*)GetSetMediaItemInfo(ita,"D_POSITION",0);
-	double itbpos=*(double*)GetSetMediaItemInfo(itb,"D_POSITION",0);
-	return itapos<itbpos;
-}
+	bool operator()(MediaItem* ita, MediaItem* itb) const
+	{
+		double itapos = *(double*)GetSetMediaItemInfo(ita, "D_POSITION", 0);
+		double itbpos = *(double*)GetSetMediaItemInfo(itb, "D_POSITION", 0);
+		return itapos<itbpos;
+	}
+};
 
 double g_FirstSelectedItemPos;
 double g_LastSelectedItemEnd;
@@ -294,7 +296,7 @@ void DoSetLoopPointsToSelectedItems(bool SetTheLoop)
 	if (selitems.size()>0)
 	{
 		double MinItemPos,MaxItemEnd=0.0;
-		sort(selitems.begin(),selitems.end(),ItemTimesCompFunc);
+		sort(selitems.begin(),selitems.end(),ItemTimesCompFunc());
 		MinItemPos=*(double*)GetSetMediaItemInfo(selitems[0],"D_POSITION",0);
 		double MaxItemPos=*(double*)GetSetMediaItemInfo(selitems[selitems.size()-1],"D_POSITION",0);
 		MaxItemEnd=MaxItemPos+*(double*)GetSetMediaItemInfo(selitems[selitems.size()-1],"D_LENGTH",0);
@@ -648,9 +650,9 @@ void DoRenameMarkersWithAscendingNumbers(COMMAND_T* ct)
 {
 	int x=0;
 
-	bool isrgn;
-	double pos, rgnend;
-	int number, color;
+	bool isrgn = false;
+	double pos, rgnend = 0.0;
+	int number, color = 0;
 	char newmarkname[100];
 	int j=1;
 	while ((x = EnumProjectMarkers3(NULL, x, &isrgn, &pos, &rgnend, NULL, &number, &color)))
@@ -708,7 +710,7 @@ void XenakiosExit()
 	plugin_register("-timer",(void*)ItemPreviewTimer);
 	RemoveUndoKeyUpHandler01();
 	DestroyWindow(g_hItemInspector);
-  g_hItemInspector=NULL;
+    g_hItemInspector=NULL;
 }
 
 int XenakiosInit()
@@ -723,13 +725,11 @@ int XenakiosInit()
 		MoveFile(oldIniFilename, iniFilename);
 	g_XenIniFilename.Set(iniFilename);
 
-	ShuffledNumbers=new int[1024];
+	g_ShuffledNumbers.resize(1024);
 
 	SWSRegisterCommands(g_XenCommandTable);
 
 	InitCommandParams();
-
-	g_filenames = new(WDL_PtrList<char>);
 
 	InitUndoKeyUpHandler01();
 	g_hItemInspector = CreateDialog(g_hInst, MAKEINTRESOURCE(IDD_ITEM_INSPECTOR), g_hwndParent, (DLGPROC)MyItemInspectorDlgProc);
